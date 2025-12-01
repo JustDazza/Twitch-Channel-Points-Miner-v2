@@ -168,8 +168,8 @@ class Twitch(object):
             response = self.gql.video_player_stream_info_overlay_channel(
                 streamer.username
             )
-        except RetryError:
-            logger.exception(f"Error getting stream info for {streamer.username}")
+        except RetryError as e:
+            logger.error(f"Error getting stream info for {streamer.username}: {e}")
             return None
         if response.user.stream is None:
             # There is no stream data, so they're offline
@@ -210,8 +210,8 @@ class Twitch(object):
                 raise StreamerDoesNotExistException
             else:
                 return response.id
-        except RetryError:
-            logger.exception(f"Error getting channel id for {streamer_username}")
+        except RetryError as e:
+            logger.error(f"Error getting channel id for {streamer_username}: {e}")
             raise StreamerDoesNotExistException
 
     def get_followers(
@@ -225,9 +225,9 @@ class Twitch(object):
         """
         try:
             return self.gql.channel_follows(limit, order)
-        except RetryError:
-            logger.exception(
-                f"Error getting user's followers. Limit: {limit}, order: '{order}'"
+        except RetryError as e:
+            logger.error(
+                f"Error getting user's followers. Limit: {limit}, order: '{order}: {e}'"
             )
             return []
 
@@ -240,8 +240,8 @@ class Twitch(object):
                     f"Joining raid from {streamer} to {raid.target_login}!",
                     extra={"emoji": ":performing_arts:", "event": Events.JOIN_RAID},
                 )
-            except RetryError:
-                logger.exception(f"Error joining raid from {streamer} to {raid}")
+            except RetryError as e:
+                logger.error(f"Error joining raid from {streamer} to {raid}: {e}")
 
     # === 'GLOBALS' METHODS === #
     # Create chunk of sleep of speed-up the break loop after CTRL+C
@@ -637,8 +637,8 @@ class Twitch(object):
     def load_channel_points_context(self, streamer: Streamer):
         try:
             response = self.gql.get_channel_points_context(streamer.username)
-        except RetryError:
-            logger.exception(f"Error while trying to load channel points context")
+        except RetryError as e:
+            logger.error(f"Error while trying to load channel points context: {e}")
             return
         if response.community is None:
             raise StreamerDoesNotExistException
@@ -702,8 +702,8 @@ class Twitch(object):
                         response = self.gql.make_prediction(
                             event.event_id, decision["id"], decision["amount"]
                         )
-                    except RetryError:
-                        logger.exception(f"Error while trying to make prediction")
+                    except RetryError as e:
+                        logger.error(f"Error while trying to make prediction: {e}")
                         return
 
                     if response.error is not None:
@@ -740,9 +740,9 @@ class Twitch(object):
             )
         try:
             self.gql.claim_community_points(streamer.channel_id, claim_id)
-        except RetryError:
-            logger.exception(
-                f"Error while trying to claim bonus for {streamer.username}"
+        except RetryError as e:
+            logger.error(
+                f"Error while trying to claim bonus for {streamer.username}: {e}"
             )
 
     # === MOMENTS === #
@@ -755,26 +755,26 @@ class Twitch(object):
 
         try:
             self.gql.claim_moment(moment_id)
-        except RetryError:
-            logger.exception(
-                f"Error while trying to claim moment with id {moment_id} for {streamer.username}",
+        except RetryError as e:
+            logger.error(
+                f"Error while trying to claim moment with id {moment_id} for {streamer.username}: {e}",
             )
 
     # === CAMPAIGNS / DROPS / INVENTORY === #
     def __get_campaign_ids_from_streamer(self, streamer):
         try:
             return self.gql.get_available_drops(streamer.channel_id).ids
-        except RetryError:
-            logger.exception(
-                f"Error while trying to get drops campaign ids for {streamer.username}"
+        except RetryError as e:
+            logger.error(
+                f"Error while trying to get drops campaign ids for {streamer.username}: {e}"
             )
             return []
 
     def __get_inventory(self):
         try:
             return self.gql.get_inventory()
-        except RetryError:
-            logger.exception(f"Error while trying to get user inventory")
+        except RetryError as e:
+            logger.error(f"Error while trying to get user inventory: {e}")
             return None
 
     def __get_drops_dashboard(
@@ -788,8 +788,8 @@ class Twitch(object):
                     campaign for campaign in campaigns if campaign.status == status
                 ]
             return campaigns
-        except RetryError:
-            logger.exception(f"Error while trying to get viewer drops dashboard")
+        except RetryError as e:
+            logger.error(f"Error while trying to get viewer drops dashboard: {e}")
             return []
 
     def __get_campaigns_details(
@@ -801,9 +801,9 @@ class Twitch(object):
                 response.campaign
                 for response in self.gql.get_drop_campaign_details(campaign_ids)
             ]
-        except RetryError:
-            logger.exception(
-                f"Error while trying to get campaigns details for campaigns: {campaign_ids}"
+        except RetryError as e:
+            logger.error(
+                f"Error while trying to get campaigns details for campaigns: {campaign_ids}: {e}"
             )
             return []
 
@@ -838,9 +838,9 @@ class Twitch(object):
         )
         try:
             response = self.gql.claim_drop_rewards(drop.drop_instance_id)
-        except RetryError:
-            logger.exception(
-                f"Error while trying to claim drop with id '{drop.drop_instance_id}'"
+        except RetryError as e:
+            logger.error(
+                f"Error while trying to claim drop with id '{drop.drop_instance_id}': {e}"
             )
             return False
         if response.status is None:
@@ -943,8 +943,8 @@ class Twitch(object):
         ):
             try:
                 response = self.gql.get_user_points_contribution(streamer.username)
-            except RetryError:
-                logger.exception("Error while trying to get user points contribution")
+            except RetryError as e:
+                logger.error(f"Error while trying to get user points contribution: {e}")
                 return
             user_goal_contributions = response.goal_contributions
             logger.debug(
@@ -987,9 +987,9 @@ class Twitch(object):
             response = self.gql.contribute_to_community_goal(
                 streamer.channel_id, goal_id, amount
             )
-        except RetryError:
-            logger.exception(
-                f"Error while contributing to channel {streamer.username}'s community goal '{title}', amount {amount}",
+        except RetryError as e:
+            logger.error(
+                f"Error while contributing to channel {streamer.username}'s community goal '{title}', amount {amount}: {e}",
             )
             return
         if response.error is not None:

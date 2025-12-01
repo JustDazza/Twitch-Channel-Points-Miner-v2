@@ -21,7 +21,8 @@ class GQLResponseErrors(GQLError):
         """The list of errors in the response."""
 
     def recoverable(self):
-        return all(error for error in self.errors if error.recoverable)
+        # If all the individual Errors are recoverable then this is too
+        return all(error.recoverable for error in self.errors)
 
     def __str__(self):
         return f"GQL Operation '{self.operation_name}' returned errors: {self.errors}"
@@ -30,14 +31,18 @@ class GQLResponseErrors(GQLError):
         return str(self)
 
 
-class InvalidJsonShapeException(Exception):
-    """Raised when a GQL response has na unexpected shape."""
+class InvalidJsonShapeException(GQLError):
+    """Raised when a GQL response has an unexpected shape."""
 
     def __init__(self, path: list[str | int], message: str):
         self.path = path
         """The path in the JSON to the unexpected value."""
         self.message = message
         """Information about the unexpected value."""
+
+    def recoverable(self):
+        # This is likely an API change and so can't be recovered
+        return False
 
     def __str__(self):
         def render_path_item(item: int | str) -> str:
@@ -62,7 +67,7 @@ class RetryError(GQLError):
         """The list of errors that occurred."""
 
     def __str__(self):
-        return f"GQL Operation '{self.operation_name}' failed all {len(self.errors)} attempts, errors: {self.errors}"
+        return f"GQL Operation '{self.operation_name}' failed all {len(self.errors)} attempts, errors:\n{self.errors}"
 
     def __repr__(self):
         return str(self)

@@ -1,6 +1,7 @@
 import copy
 import logging
 import time
+import traceback
 from secrets import token_hex
 from typing import Callable, Any
 
@@ -65,6 +66,19 @@ def is_recoverable_error(e: Exception) -> bool:
     return False
 
 
+def error_context(e: Exception) -> str | None:
+    """
+    Returns a context string (or None) for the given Error. GQLErrors are well understood and so don't need context,
+    anything else is likely a bug and so does need context.
+    :param e: The Exception to check.
+    :return: The context string, or None if no context is needed.
+    """
+    if not isinstance(e, GQLError):
+        return traceback.format_exc()
+    else:
+        return None
+
+
 def parse_list[T](parse: Callable[[Any], T], value: Any) -> list[T]:
     """
     Utility for parsing a list
@@ -77,10 +91,31 @@ def parse_list[T](parse: Callable[[Any], T], value: Any) -> list[T]:
     raise InvalidJsonShapeException([], "list expected")
 
 
+class ExceptionContext:
+    """Utility for printing a stack trace outside the context of an exception handler."""
+
+    def __init__(self, exception: Exception, stack_trace: str | None):
+        self.exception = exception
+        self.stack_trace = stack_trace
+
+    def __repr__(self):
+        if self.stack_trace is not None:
+            return f"{self.stack_trace}\n{self.exception}"
+        else:
+            return f"{self.exception}"
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, ExceptionContext)
+            and self.exception == other.exception
+            and self.stack_trace == other.stack_trace
+        )
+
+
 class SuccessResult[TResult]:
     """Returned when the result of `make_attempts` was successful."""
 
-    def __init__(self, errors: list[Exception], result: TResult):
+    def __init__(self, errors: list[ExceptionContext], result: TResult):
         self.errors = errors
         """Any errors that occurred."""
         self.result = result
@@ -106,7 +141,7 @@ class SuccessResult[TResult]:
 class ErrorResult:
     """Returned when the result of `make_attempts` was 1 or more errors."""
 
-    def __init__(self, errors: list[Exception]):
+    def __init__(self, errors: list[ExceptionContext]):
         self.errors = errors
         """The errors in the order they occurred."""
 
@@ -115,7 +150,7 @@ class ErrorResult:
         """The number of attempts made."""
         return len(self.errors)
 
-    def __str__(self):
+    def __repr__(self):
         return f"ErrorResult({self.__dict__})"
 
     def __eq__(self, other):
@@ -141,6 +176,7 @@ class AttemptStrategy:
         attempt: Callable[[], TResult],
         validate: Callable[[TResult], None],
         retryable: Callable[[Exception], bool],
+        exception_context: Callable[[Exception], str | None],
     ) -> SuccessResult | ErrorResult:
         """
         Calls `attempt` up to `self.attempts` times until either a successful attempt is made or the maximum number of
@@ -148,10 +184,11 @@ class AttemptStrategy:
         :param attempt: The functon to attempt.
         :param validate: Function to check if the result is valid. Should throw an Exception if not.
         :param retryable: Function that returns True if a given Error can be retried.
+        :param exception_context: Function that returns a context string (or None) for a given Exception.
         :return:
         """
         attempts = 0
-        errors: list[Exception] = []
+        errors: list[ExceptionContext] = []
         while attempts < self.attempts:
             attempts += 1
             try:
@@ -159,7 +196,7 @@ class AttemptStrategy:
                 validate(result)
                 return SuccessResult(errors, result)
             except Exception as e:
-                errors.append(e)
+                errors.append(ExceptionContext(e, exception_context(e)))
                 if not retryable(e):
                     logger.debug(f"Error cannot be retried: {e}")
                     break
@@ -258,6 +295,7 @@ class GQL:
             lambda: self.__post_gql_request(request_json, parse),
             validate_response,
             is_recoverable_error,
+            error_context,
         )
         return self.__handle_result(result, operation_name)
 
@@ -278,6 +316,7 @@ class GQL:
             ),
             validate_response,
             is_recoverable_error,
+            error_context,
         )
         return self.__handle_result(result, operation_name)
 

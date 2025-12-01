@@ -1,6 +1,3 @@
-from typing import Generic, TypeVar
-
-
 class PageInfo:
     """Information about the current pagination state."""
 
@@ -21,10 +18,7 @@ class PageInfo:
         return f"PageInfo({self.__dict__})"
 
 
-T = TypeVar("T")
-
-
-class Edge(Generic[T]):
+class Edge[T]:
     """Representation of a Pagination Edge."""
 
     def __init__(self, cursor: str, node: T):
@@ -37,7 +31,7 @@ class Edge(Generic[T]):
         return f"Edge({self.__dict__})"
 
 
-class Paginated(Generic[T]):
+class Paginated[T]:
     """Representation of a GQL Paginated response."""
 
     def __init__(self, edges: list[Edge[T]], page_info: PageInfo):

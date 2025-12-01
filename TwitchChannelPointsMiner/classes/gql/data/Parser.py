@@ -57,14 +57,40 @@ class JsonParentContext(ContextManager):
             exc_val.path.append(self.name)
 
 
+def describe_value(value: Any) -> str:
+    # Omit the types for None, dict, and list as the latter would be too much to print
+    if value is None:
+        return "None"
+
+    if isinstance(value, dict):
+        return "dict"
+
+    if isinstance(value, list):
+        return "list"
+
+    return f"type: '{type(value).__name__}', value: '{repr(value)}'"
+
+
+def expect_is_type[T](value: Any, _type: type[T]) -> T:
+    """
+    Parser that checks that the value is a given type then returns it as that type.
+    :param value: The value to check.
+    :param _type: The expected type of the value.
+    :return: The value as the given type.
+    """
+    if not isinstance(value, _type):
+        raise InvalidJsonShapeException(
+            [], f"{_type.__name__} expected, got {describe_value(value)}"
+        )
+    return value
+
+
 def expect_dict(value: Any) -> dict:
     """
     Parser that checks that the value is a dict then returns it.
     :raises InvalidJsonShapeException: if the value is not a dict
     """
-    if not isinstance(value, dict):
-        raise InvalidJsonShapeException([], "dict expected")
-    return value
+    return expect_is_type(value, dict)
 
 
 def expect_list(value: Any) -> list:
@@ -72,9 +98,7 @@ def expect_list(value: Any) -> list:
     Parser that checks that the value is a list then returns it.
     :raises InvalidJsonShapeException: if the value is not a list.
     """
-    if not isinstance(value, list):
-        raise InvalidJsonShapeException([], "list expected")
-    return value
+    return expect_is_type(value, list)
 
 
 def expect_str(value: Any) -> str:
@@ -82,9 +106,7 @@ def expect_str(value: Any) -> str:
     Parser that checks that the value is a string then returns it.
     :raises InvalidJsonShapeException: if the value is not a string.
     """
-    if not isinstance(value, str):
-        raise InvalidJsonShapeException([], "str expected")
-    return value
+    return expect_is_type(value, str)
 
 
 def expect_int(value: Any) -> int:
@@ -92,9 +114,7 @@ def expect_int(value: Any) -> int:
     Parser that checks that the value is an int then returns it.
     :raises InvalidJsonShapeException: if the value is not an int.
     """
-    if not isinstance(value, int):
-        raise InvalidJsonShapeException([], "int expected")
-    return value
+    return expect_is_type(value, int)
 
 
 def expect_bool(value: Any) -> bool:
@@ -102,9 +122,7 @@ def expect_bool(value: Any) -> bool:
     Parser that checks that the value is a bool then returns it.
     :raises InvalidJsonShapeException: if the value is not a bool.
     """
-    if not isinstance(value, bool):
-        raise InvalidJsonShapeException([], "bool expected")
-    return value
+    return expect_is_type(value, bool)
 
 
 def expect_iso_8601(value: Any) -> datetime.datetime:
@@ -112,8 +130,7 @@ def expect_iso_8601(value: Any) -> datetime.datetime:
     Parser that checks that the value is a valid ISO8601 string and returns it as a datetime.
     :raises InvalidJsonShapeException: if the value is not a valid ISO8601 string.
     """
-    if not isinstance(value, str):
-        raise InvalidJsonShapeException([], "str expected")
+    value = expect_str(value)
 
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
         try:
@@ -135,7 +152,7 @@ def parse_expected_value[T](
     :raises InvalidJsonShapeException: if the property is not in the dict or the value cannot be parsed.
     """
     if property_name not in source:
-        raise InvalidJsonShapeException([property_name], "value should not be None")
+        raise InvalidJsonShapeException([property_name], "value is not present")
     with JsonParentContext(property_name):
         return type_parser(source[property_name])
 
@@ -594,7 +611,10 @@ class Parser:
         errors = parse_value(response_dict, "errors", list_parser(error_parser), [])
         data = parse_value(response_dict, "data", expect_dict)
         extensions = parse_expected_value(response_dict, "extensions", expect_dict)
-        operation_name = parse_expected_value(extensions, "operationName", expect_str)
+        with JsonParentContext("extensions"):
+            operation_name = parse_expected_value(
+                extensions, "operationName", expect_str
+            )
         if expect_no_errors and errors is not None and len(errors) > 0:
             raise GQLResponseErrors(operation_name, errors)
         return errors or [], operation_name, data or {}
