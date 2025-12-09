@@ -163,6 +163,8 @@ class Twitch(object):
         Gets information about the stream for the given streamer.
         :param streamer: The streamer to check.
         :return: The stream info or None if a stream is not currently in progress or an error occurs.
+        :raises RetryError: If we can't make the request and so don't know if they're online.
+        :raises StreamerIsOfflineException: If the streamer is offline.
         """
         try:
             response = self.gql.video_player_stream_info_overlay_channel(
@@ -170,7 +172,7 @@ class Twitch(object):
             )
         except RetryError as e:
             logger.error(f"Error getting stream info for {streamer.username}: {e}")
-            return None
+            raise e
         if response.user.stream is None:
             # There is no stream data, so they're offline
             raise StreamerIsOfflineException
@@ -187,6 +189,8 @@ class Twitch(object):
                 self.update_stream(streamer)
             except StreamerIsOfflineException:
                 streamer.set_offline()
+            except RetryError:
+                pass
             else:
                 streamer.set_online()
         else:
@@ -194,6 +198,8 @@ class Twitch(object):
                 self.update_stream(streamer)
             except StreamerIsOfflineException:
                 streamer.set_offline()
+            except RetryError:
+                pass
 
     def get_channel_id(self, streamer_username: str) -> str:
         """
