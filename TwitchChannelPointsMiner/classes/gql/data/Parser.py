@@ -236,7 +236,11 @@ def dig[T](value: Any, path: list[str], and_then: Callable[[Any], T]) -> T:
 def error_parser(value: Any) -> Error:
     expect_dict(value)
     message = parse_expected_value(value, "message", expect_str)
-    recoverable = message in ["service timeout"]
+    recoverable = message in [
+        "service timeout",
+        "service unavailable",
+        "context deadline exceeded",
+    ]
     return Error(
         recoverable, message, parse_value(value, "path", list_parser(expect_str))
     )
