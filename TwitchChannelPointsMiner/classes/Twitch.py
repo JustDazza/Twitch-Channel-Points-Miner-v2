@@ -33,8 +33,8 @@ from TwitchChannelPointsMiner.classes.entities.Campaign import Campaign
 from TwitchChannelPointsMiner.classes.entities.CommunityGoal import CommunityGoal
 from TwitchChannelPointsMiner.classes.entities.Drop import Drop
 from TwitchChannelPointsMiner.classes.entities.Streamer import Streamer
-from TwitchChannelPointsMiner.classes.gql import GQL
 from TwitchChannelPointsMiner.classes.gql.Errors import RetryError
+from TwitchChannelPointsMiner.classes.gql.Integration import GQLFactory
 from TwitchChannelPointsMiner.classes.gql.data.response.Drops import (
     DropCampaignInProgress,
     DropCampaignDetails,
@@ -65,7 +65,13 @@ class Twitch(object):
         "twilight_build_id_pattern",
     ]
 
-    def __init__(self, username, user_agent, password=None):
+    def __init__(
+        self,
+        username,
+        user_agent,
+        password=None,
+        gql_factory: GQLFactory | None = None,
+    ):
         cookies_path = os.path.join(Path().absolute(), "cookies")
         Path(cookies_path).mkdir(parents=True, exist_ok=True)
         self.cookies_file = os.path.join(cookies_path, f"{username}.pkl")
@@ -86,7 +92,8 @@ class Twitch(object):
             device_id=device_id,
             session_id=client_session_id,
         )
-        self.gql = GQL(self.client_session)
+        gql_factory = gql_factory if gql_factory is not None else GQLFactory()
+        self.gql = gql_factory.create(self.client_session)
         self.running = True
 
     def login(self):

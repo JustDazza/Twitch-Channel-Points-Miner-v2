@@ -21,6 +21,7 @@ from TwitchChannelPointsMiner.classes.Exceptions import StreamerDoesNotExistExce
 from TwitchChannelPointsMiner.classes.Settings import FollowersOrder, Priority, Settings
 from TwitchChannelPointsMiner.classes.Twitch import Twitch
 from TwitchChannelPointsMiner.classes.WebSocketsPool import WebSocketsPool
+from TwitchChannelPointsMiner.classes.gql.Integration import GQLFactory, GQL
 from TwitchChannelPointsMiner.logger import LoggerSettings, configure_loggers
 from TwitchChannelPointsMiner.utils import (
     millify,
@@ -29,6 +30,7 @@ from TwitchChannelPointsMiner.utils import (
     get_user_agent,
     internet_connection_available,
     set_default_settings,
+    AttemptStrategy,
 )
 
 # Suppress:
@@ -85,6 +87,8 @@ class TwitchChannelPointsMiner:
         logger_settings: LoggerSettings = LoggerSettings(),
         # Default values for all streamers
         streamer_settings: StreamerSettings = StreamerSettings(),
+        # GQL Integration
+        gql: GQL | AttemptStrategy | GQLFactory | None = None
     ):
         # Fixes TypeError: 'NoneType' object is not subscriptable
         if not username or username == "your-twitch-username":
@@ -137,7 +141,18 @@ class TwitchChannelPointsMiner:
 
         # user_agent = get_user_agent("FIREFOX")
         user_agent = get_user_agent("CHROME")
-        self.twitch = Twitch(self.username, user_agent, password)
+
+        if gql is None:
+            # Use the default factory
+            gql = GQLFactory()
+        elif isinstance(gql, AttemptStrategy):
+            # Convenience for the expected most common use case where gql is provided
+            gql = GQLFactory(attempt_strategy=gql)
+        elif not isinstance(gql, GQLFactory):
+            # Invalid argument type
+            raise ValueError(f"gql must be an instance of be one of None, AttemptStrategy, or GQLFactory")
+
+        self.twitch = Twitch(self.username, user_agent, password, gql_factory=gql)
 
         self.claim_drops_startup = claim_drops_startup
         self.priority = priority if isinstance(priority, list) else [priority]
