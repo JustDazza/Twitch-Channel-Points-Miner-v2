@@ -12,12 +12,16 @@ import string
 import time
 from pathlib import Path
 from secrets import choice, token_hex
-from typing import Dict, Any
+from typing import Any, Dict
 
 import requests
 import validators
 
-from TwitchChannelPointsMiner.classes.ClientSession import ClientSession
+from TwitchChannelPointsMiner.classes.entities.Bet import Bet
+from TwitchChannelPointsMiner.classes.entities.Campaign import Campaign
+from TwitchChannelPointsMiner.classes.entities.CommunityGoal import CommunityGoal
+from TwitchChannelPointsMiner.classes.entities.Drop import Drop
+from TwitchChannelPointsMiner.classes.entities.Streamer import Streamer
 from TwitchChannelPointsMiner.classes.Exceptions import (
     StreamerDoesNotExistException,
     StreamerIsOfflineException,
@@ -49,6 +53,14 @@ from TwitchChannelPointsMiner.utils import (
     millify,
     internet_connection_available,
 )
+
+# import json
+
+
+# from urllib.parse import quote
+# from base64 import urlsafe_b64decode
+# from datetime import datetime
+
 
 logger = logging.getLogger(__name__)
 JsonType = Dict[str, Any]
@@ -107,7 +119,7 @@ class Twitch(object):
             )
 
     # === STREAMER / STREAM / INFO === #
-    def update_stream(self, streamer):
+    def update_stream(self, streamer: Streamer):
         if streamer.stream.update_required() is True:
             stream_info = self.get_stream_info(streamer)
             if stream_info is not None and stream_info.stream is not None:
@@ -165,26 +177,26 @@ class Twitch(object):
         except requests.exceptions.RequestException as e:
             logger.error(f"Something went wrong during extraction of 'spade_url': {e}")
 
-    def get_stream_info(self, streamer: Streamer):
-        """
-        Gets information about the stream for the given streamer.
-        :param streamer: The streamer to check.
-        :return: The stream info or None if a stream is not currently in progress or an error occurs.
-        :raises RetryError: If we can't make the request and so don't know if they're online.
-        :raises StreamerIsOfflineException: If the streamer is offline.
-        """
-        try:
-            response = self.gql.video_player_stream_info_overlay_channel(
-                streamer.username
-            )
-        except RetryError as e:
-            logger.error(f"Error getting stream info for {streamer.username}: {e}")
-            raise e
-        if response.user.stream is None:
-            # There is no stream data, so they're offline
-            raise StreamerIsOfflineException
-        else:
-            return response.user
+    def get_broadcast_id(self, streamer):
+        json_data = copy.deepcopy(GQLOperations.WithIsStreamLiveQuery)
+        json_data["variables"] = {"id": streamer.channel_id}
+        response = self.post_gql_request(json_data)
+        if response != {}:
+            stream = response["data"]["user"]["stream"]
+            if stream is not None:
+                return stream["id"]
+            else:
+                raise StreamerIsOfflineException
+
+    def get_stream_info(self, streamer):
+        json_data = copy.deepcopy(GQLOperations.VideoPlayerStreamInfoOverlayChannel)
+        json_data["variables"] = {"channel": streamer.username}
+        response = self.post_gql_request(json_data)
+        if response != {}:
+            if response["data"]["user"]["stream"] is None:
+                raise StreamerIsOfflineException
+            else:
+                return response["data"]["user"]
 
     def check_streamer_online(self, streamer):
         if time.time() < streamer.offline_at + 60:
@@ -247,14 +259,23 @@ class Twitch(object):
     def update_raid(self, streamer, raid):
         if streamer.raid != raid:
             streamer.raid = raid
-            try:
-                self.gql.join_raid(raid.raid_id)
-                logger.info(
-                    f"Joining raid from {streamer} to {raid.target_login}!",
-                    extra={"emoji": ":performing_arts:", "event": Events.JOIN_RAID},
-                )
-            except RetryError as e:
-                logger.error(f"Error joining raid from {streamer} to {raid}: {e}")
+            json_data = copy.deepcopy(GQLOperations.JoinRaid)
+            json_data["variables"] = {"input": {"raidID": raid.raid_id}}
+            self.post_gql_request(json_data)
+
+            logger.info(
+                f"Joining raid from {streamer} to {raid.target_login}!",
+                extra={"emoji": ":performing_arts:", "event": Events.JOIN_RAID},
+            )
+
+    def viewer_is_mod(self, streamer):
+        json_data = copy.deepcopy(GQLOperations.ModViewChannelQuery)
+        json_data["variables"] = {"channelLogin": streamer.username}
+        response = self.post_gql_request(json_data)
+        try:
+            streamer.viewer_is_mod = response["data"]["user"]["self"]["isModerator"]
+        except (ValueError, KeyError):
+            streamer.viewer_is_mod = False
 
     # === 'GLOBALS' METHODS === #
     # Create chunk of sleep of speed-up the break loop after CTRL+C
@@ -366,7 +387,7 @@ class Twitch(object):
                 for index in streamers_index:
                     if (streamers[index].stream.update_elapsed() / 60) > 10:
                         # Why this user It's currently online but the last updated was more than 10minutes ago?
-                        # Please perform a manually update and check if the user it's online
+                        # Please perform a manual update and check if the user it's online
                         self.check_streamer_online(streamers[index])
 
                 """
@@ -398,14 +419,12 @@ class Twitch(object):
 
                     if priority == Priority.ORDER:
                         # Get the first 2 items, they are already in order
-                        streamers_watching.update(
-                            streamers_index[: remaining_watch_amount()]
-                        )
+                        streamers_watching += streamers_index[:2]
 
-                    elif prior in [
-                        Priority.POINTS_ASCENDING,
-                        Priority.POINTS_DESCENDING,
-                    ]:
+                    elif (
+                        prior in [Priority.POINTS_ASCENDING, Priority.POINTS_DESCENDING]
+                        and len(streamers_watching) < 2
+                    ):
                         items = [
                             {"points": streamers[index].channel_points, "index": index}
                             for index in streamers_index
@@ -417,13 +436,9 @@ class Twitch(object):
                                 True if priority == Priority.POINTS_DESCENDING else False
                             ),
                         )
-                        streamers_watching.update(
-                            [item["index"] for item in items][
-                                : remaining_watch_amount()
-                            ]
-                        )
+                        streamers_watching += [item["index"] for item in items][:2]
 
-                    elif priority == Priority.STREAK:
+                    elif prior == Priority.STREAK and len(streamers_watching) < 2:
                         """
                         Check if we need need to change priority based on watch streak
                         Viewers receive points for returning for x consecutive streams.
@@ -479,24 +494,41 @@ class Twitch(object):
                     try:
                         ####################################
                         # Start of fix for 2024/5 API Change
+                        # Create the JSON data for the GraphQL request
+                        json_data = copy.deepcopy(GQLOperations.PlaybackAccessToken)
+                        json_data["variables"] = {
+                            "login": streamers[index].username,
+                            "isLive": True,
+                            "isVod": False,
+                            "vodID": "",
+                            "playerType": "site"
+                            # "playerType": "picture-by-picture",
+                        }
 
                         # Get signature and value using the post_gql_request method
                         try:
-                            response_playback_access_token = (
-                                self.gql.get_playback_access_token(
-                                    streamers[index].username
-                                )
+                            responsePlaybackAccessToken = self.post_gql_request(
+                                json_data
                             )
                             logger.debug(
                                 f"Sent PlaybackAccessToken request for {streamers[index]}"
                             )
 
-                            signature = response_playback_access_token.signature
-                            value = response_playback_access_token.value
+                            if "data" not in responsePlaybackAccessToken:
+                                logger.error(
+                                    f"Invalid response from Twitch: {responsePlaybackAccessToken}"
+                                )
+                                continue
+
+                            streamPlaybackAccessToken = responsePlaybackAccessToken[
+                                "data"
+                            ].get("streamPlaybackAccessToken", {})
+                            signature = streamPlaybackAccessToken.get("signature")
+                            value = streamPlaybackAccessToken.get("value")
 
                             if not signature or not value:
                                 logger.error(
-                                    f"Missing signature or value in Twitch response: {response_playback_access_token}"
+                                    f"Missing signature or value in Twitch response: {responsePlaybackAccessToken}"
                                 )
                                 continue
 
@@ -526,13 +558,8 @@ class Twitch(object):
                         broadcast_qualities = response_broadcast_qualities.text
 
                         # Just takes the last line, which should be the URL for the lowest quality
-                        broadcast_lowest_quality_url = broadcast_qualities.split("\n")[
-                            -1
-                        ]
-                        if not validators.url(broadcast_lowest_quality_url):
-                            logger.debug(
-                                "RequestBroadcastQualitiesURL failed for {streamers[index]}: Unable to parse URL in response"
-                            )
+                        BroadcastLowestQualityURL = BroadcastQualities.split("\n")[-1]
+                        if not validators.url(BroadcastLowestQualityURL):
                             continue
 
                         # Get list of video URLs
@@ -615,9 +642,14 @@ class Twitch(object):
                                                     "skip_discord": True,
                                                     "skip_webhook": True,
                                                     "skip_matrix": True,
-                                                    "skip_gotify": True,,
-                                                    "skip_pushover": True
+                                                    "skip_gotify": True,
                                                 },
+                                            )
+
+                                        if Settings.logger.telegram is not None:
+                                            Settings.logger.telegram.send(
+                                                "\n".join(drop_messages),
+                                                Events.DROP_STATUS,
                                             )
 
                                         if len(Settings.logger.hooks) > 0:
@@ -662,83 +694,89 @@ class Twitch(object):
                 for goal in channel.community_points_settings.goals
             }
 
-        if community_points.available_claim is not None:
-            self.claim_bonus(streamer, community_points.available_claim.id)
+            if community_points["availableClaim"] is not None:
+                self.claim_bonus(streamer, community_points["availableClaim"]["id"])
+
+            if streamer.settings.community_goals is True:
+                self.contribute_to_community_goals(streamer)
 
         if streamer.settings.community_goals is True:
             self.contribute_to_community_goals(streamer)
 
-    def make_predictions(self, event):
-        decision = event.bet.calculate(event.streamer.channel_points)
-        # selector_index = 0 if decision["choice"] == "A" else 1
-
-        logger.info(
-            f"Going to complete bet for {event}",
-            extra={
-                "emoji": ":four_leaf_clover:",
-                "event": Events.BET_GENERAL,
-            },
-        )
-        if event.status == "ACTIVE":
-            skip, compared_value = event.bet.skip()
-            if skip is True:
-                logger.info(
-                    f"Skip betting for the event {event}",
-                    extra={
-                        "emoji": ":pushpin:",
-                        "event": Events.BET_FILTERS,
-                    },
-                )
-                logger.info(
-                    f"Skip settings {event.bet.settings.filter_condition}, current value is: {compared_value}",
-                    extra={
-                        "emoji": ":pushpin:",
-                        "event": Events.BET_FILTERS,
-                    },
-                )
-            else:
-                if decision["amount"] >= 10:
-                    logger.info(
-                        # f"Place {millify(decision['amount'])} channel points on: {event.bet.get_outcome(selector_index)}",
-                        f"Place {millify(decision['amount'])} channel points on: {event.bet.get_outcome(decision['choice'])}",
-                        extra={
-                            "emoji": ":four_leaf_clover:",
-                            "event": Events.BET_GENERAL,
-                        },
+    def place_bet(self, streamer: Streamer, event_id: str, bet: Bet):
+        event = streamer.event_predictions[event_id]
+        if event is not None:
+            logger.info(
+                f"Going to place bet for streamer '{streamer.username}', event={event}, bet={bet}",
+                extra={
+                    "emoji": ":four_leaf_clover:",
+                    "event": Events.BET_GENERAL,
+                },
+            )
+            if event.status == "ACTIVE":
+                if bet.points > 0:
+                    previously_placed_points = (
+                        event.prediction.points if event.prediction is not None else 0
                     )
-
-                    try:
-                        response = self.gql.make_prediction(
-                            event.event_id, decision["id"], decision["amount"]
-                        )
-                    except RetryError as e:
-                        logger.error(f"Error while trying to make prediction: {e}")
-                        return
-
-                    if response.error is not None:
-                        error_code = response.error.code
-                        logger.error(
-                            f"Failed to place bet, error: {error_code}",
+                    if previously_placed_points + bet.points >= 10:
+                        logger.info(
+                            f"Place {_millify(bet.points)} channel points on: {event.outcomes_by_id[bet.outcome_id]}",
                             extra={
                                 "emoji": ":four_leaf_clover:",
-                                "event": Events.BET_FAILED,
+                                "event": Events.BET_GENERAL,
+                            },
+                        )
+
+                        json_data = copy.deepcopy(GQLOperations.MakePrediction)
+                        json_data["variables"] = {
+                            "input": {
+                                "eventID": event.event_id,
+                                "outcomeID": bet.outcome_id,
+                                "points": bet.points,
+                                "transactionID": token_hex(16),
+                            }
+                        }
+                        response = self.post_gql_request(json_data)
+                        if (
+                            "data" in response
+                            and "makePrediction" in response["data"]
+                            and "error" in response["data"]["makePrediction"]
+                            and response["data"]["makePrediction"]["error"] is not None
+                        ):
+                            error_code = response["data"]["makePrediction"]["error"][
+                                "code"
+                            ]
+                            logger.error(
+                                f"Failed to place bet, error: {error_code}",
+                                extra={
+                                    "emoji": ":four_leaf_clover:",
+                                    "event": Events.BET_FAILED,
+                                },
+                            )
+                    else:
+                        logger.info(
+                            f"Bet won't be placed as the total amount {_millify(bet.points + previously_placed_points)} would be less than the minimum required 10",
+                            extra={
+                                "emoji": ":four_leaf_clover:",
+                                "event": Events.BET_GENERAL,
                             },
                         )
                 else:
-                    logger.info(
-                        f"Bet won't be placed as the amount {millify(decision['amount'])} is less than the minimum required 10",
-                        extra={
-                            "emoji": ":four_leaf_clover:",
-                            "event": Events.BET_GENERAL,
-                        },
+                    logger.warning(
+                        f"Bet won't be placed as the bet amount {_millify(bet.points)} cannot be negative, this is likely a bug"
                     )
+
+            else:
+                logger.info(
+                    f"Oh no! The event is not active anymore! Current status: {event.status}",
+                    extra={
+                        "emoji": ":disappointed_relieved:",
+                        "event": Events.BET_FAILED,
+                    },
+                )
         else:
-            logger.info(
-                f"Oh no! The event is not active anymore! Current status: {event.status}",
-                extra={
-                    "emoji": ":disappointed_relieved:",
-                    "event": Events.BET_FAILED,
-                },
+            logger.warning(
+                f"Unable to place bet for event {event_id} for streamer {streamer.username}, event does not exist."
             )
 
     def claim_bonus(self, streamer: Streamer, claim_id: str):
@@ -771,12 +809,19 @@ class Twitch(object):
 
     # === CAMPAIGNS / DROPS / INVENTORY === #
     def __get_campaign_ids_from_streamer(self, streamer):
+        json_data = copy.deepcopy(GQLOperations.DropsHighlightService_AvailableDrops)
+        json_data["variables"] = {"channelID": streamer.channel_id}
+        response = self.post_gql_request(json_data)
         try:
-            return self.gql.get_available_drops(streamer.channel_id).ids
-        except RetryError as e:
-            logger.error(
-                f"Error while trying to get drops campaign ids for {streamer.username}: {e}"
+            return (
+                []
+                if response["data"]["channel"]["viewerDropCampaigns"] is None
+                else [
+                    item["id"]
+                    for item in response["data"]["channel"]["viewerDropCampaigns"]
+                ]
             )
+        except (ValueError, KeyError):
             return []
 
     def __get_inventory(self):
@@ -786,35 +831,45 @@ class Twitch(object):
             logger.error(f"Error while trying to get user inventory: {e}")
             return None
 
-    def __get_drops_dashboard(
-        self, status: str | None = None
-    ) -> list[DropCampaignDashboard]:
-        try:
-            campaigns = self.gql.get_viewer_drops_dashboard().campaigns or []
-            if status is not None:
-                status = status.upper()
-                campaigns = [
-                    campaign for campaign in campaigns if campaign.status == status
-                ]
-            return campaigns
-        except RetryError as e:
-            logger.error(f"Error while trying to get viewer drops dashboard: {e}")
-            return []
+    def __get_drops_dashboard(self, status=None):
+        response = self.post_gql_request(GQLOperations.ViewerDropsDashboard)
+        campaigns = (
+            response.get("data", {})
+            .get("currentUser", {})
+            .get("dropCampaigns", [])
+            or []
+        )
 
-    def __get_campaigns_details(
-        self, campaigns: list[DropCampaignDashboard]
-    ) -> list[DropCampaignDetails]:
-        campaign_ids: list[str] = [c.id for c in campaigns]
-        try:
-            return [
-                response.campaign
-                for response in self.gql.get_drop_campaign_details(campaign_ids)
-            ]
-        except RetryError as e:
-            logger.error(
-                f"Error while trying to get campaigns details for campaigns: {campaign_ids}: {e}"
+        if status is not None:
+            campaigns = (
+                list(filter(lambda x: x["status"] == status.upper(), campaigns)) or []
             )
-            return []
+
+        return campaigns
+
+    def __get_campaigns_details(self, campaigns):
+        result = []
+        chunks = create_chunks(campaigns, 20)
+        for chunk in chunks:
+            json_data = []
+            for campaign in chunk:
+                json_data.append(copy.deepcopy(GQLOperations.DropCampaignDetails))
+                json_data[-1]["variables"] = {
+                    "dropID": campaign["id"],
+                    "channelLogin": f"{self.twitch_login.get_user_id()}",
+                }
+
+            response = self.post_gql_request(json_data)
+            if not isinstance(response, list):
+                logger.debug("Unexpected campaigns response format, skipping chunk")
+                continue
+            for r in response:
+                drop_campaign = (
+                    r.get("data", {}).get("user", {}).get("dropCampaign", None)
+                )
+                if drop_campaign is not None:
+                    result.append(drop_campaign)
+        return result
 
     def __sync_campaigns(self, campaigns: list[Campaign]) -> list[Campaign]:
         # We need the inventory only for get the real updated value/progress
@@ -845,23 +900,28 @@ class Twitch(object):
         logger.info(
             f"Claim {drop}", extra={"emoji": ":package:", "event": Events.DROP_CLAIM}
         )
+
+        json_data = copy.deepcopy(GQLOperations.DropsPage_ClaimDropRewards)
+        json_data["variables"] = {"input": {"dropInstanceID": drop.drop_instance_id}}
+        response = self.post_gql_request(json_data)
         try:
-            response = self.gql.claim_drop_rewards(drop.drop_instance_id)
-        except RetryError as e:
-            logger.error(
-                f"Error while trying to claim drop with id '{drop.drop_instance_id}': {e}"
-            )
+            # response["data"]["claimDropRewards"] can be null and respose["data"]["errors"] != []
+            # or response["data"]["claimDropRewards"]["status"] === DROP_INSTANCE_ALREADY_CLAIMED
+            if ("claimDropRewards" in response["data"]) and (
+                response["data"]["claimDropRewards"] is None
+            ):
+                return False
+            elif ("errors" in response["data"]) and (response["data"]["errors"] != []):
+                return False
+            elif ("claimDropRewards" in response["data"]) and (
+                response["data"]["claimDropRewards"]["status"]
+                in ["ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"]
+            ):
+                return True
+            else:
+                return False
+        except (ValueError, KeyError):
             return False
-        if response.status is None:
-            return False
-        if response.errors is not None and len(response.errors) > 0:
-            logger.error(
-                f"Errors while trying to claim drop with id '{drop.drop_instance_id}': {response.errors}"
-            )
-            return False
-        if response.status in ["ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"]:
-            return True
-        return False
 
     def claim_all_drops_from_inventory(self):
         inventory = self.__get_inventory()
@@ -989,14 +1049,21 @@ class Twitch(object):
                             f"Not contributing to community goal {goal.title}, user channel points {streamer.channel_points}, user stream contribution {user_stream_contribution}, all users total contribution {goal.points_contributed}"
                         )
 
-    def contribute_to_community_goal(
-        self, streamer: Streamer, goal_id: str, title: str, amount: int
-    ):
-        try:
-            response = self.gql.contribute_to_community_goal(
-                streamer.channel_id, goal_id, amount
-            )
-        except RetryError as e:
+    def contribute_to_community_goal(self, streamer, goal_id, title, amount):
+        json_data = copy.deepcopy(GQLOperations.ContributeCommunityPointsCommunityGoal)
+        json_data["variables"] = {
+            "input": {
+                "amount": amount,
+                "channelID": streamer.channel_id,
+                "goalID": goal_id,
+                "transactionID": token_hex(16),
+            }
+        }
+
+        response = self.post_gql_request(json_data)
+
+        error = response["data"]["contributeCommunityPointsCommunityGoal"]["error"]
+        if error:
             logger.error(
                 f"Error while contributing to channel {streamer.username}'s community goal '{title}', amount {amount}: {e}",
             )

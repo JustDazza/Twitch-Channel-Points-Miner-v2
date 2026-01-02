@@ -1,274 +1,285 @@
-import abc
-import logging
-import time
-from threading import Timer
+import uuid
+from datetime import datetime
+from typing import Any
 
 from dateutil import parser
+from dateutil.parser import ParserError
 
-from TwitchChannelPointsMiner.classes.Settings import Settings, Events
-from TwitchChannelPointsMiner.classes.Twitch import Twitch
-from TwitchChannelPointsMiner.classes.entities.CommunityGoal import CommunityGoal
-from TwitchChannelPointsMiner.classes.entities.EventPrediction import EventPrediction
-from TwitchChannelPointsMiner.classes.entities.Message import Message
-from TwitchChannelPointsMiner.classes.entities.Raid import Raid
-from TwitchChannelPointsMiner.classes.entities.Streamer import Streamer
+from TwitchChannelPointsMiner.classes.entities.EventPrediction import (
+    EventPrediction,
+    Outcome,
+    Prediction,
+    Result,
+    ResultType,
+)
+from TwitchChannelPointsMiner.JSONDictDecoder import (
+    InvalidValueError,
+    JSONDictDecoder,
+    WrongTypeError,
+    expect_type_and_map,
+    str_validator,
+)
 
-logger = logging.getLogger(__name__)
-
-
-class MessageListener(abc.ABC):
-    def on_message(self, message: Message):
-        """
-        Called when a PubSub Message is received.
-        :param message: The message received.
-        """
-        pass
+type UUID = str
 
 
-class PubSubHandler(MessageListener):
+def __parse_uuid(string: str) -> UUID:
+    try:
+        uuid.UUID(string)
+        return string
+    except ValueError:
+        raise WrongTypeError([], UUID, string)
+
+
+def uuid_decoder(context: JSONDictDecoder, data: Any) -> UUID:
     """
-    Listener for PubSub format Messages that handles them in a client agnostic way, i.e. this works with messages from
-    both the legacy PubSub and Hermes WebSocket APIs.
+    Parses a UUID object from a string into a datetime object.
+
+    :param context: The decoder that can be used to
+    :param data: The data to decode.
+    :return: The decoded UUID.
     """
+    return expect_type_and_map(context, data, str, __parse_uuid)
 
-    def __init__(self, twitch: Twitch, streamers: list[Streamer], events_predictions: dict):
-        self.twitch = twitch
-        self.streamers = streamers
-        self.events_predictions = events_predictions
 
-    def on_message(self, message: Message):
-        try:
-            streamer = next(
-                (streamer for streamer in self.streamers if streamer.channel_id == message.channel_id), None
-            )
-            if streamer is None:
-                return
-            if message.topic == "community-points-user-v1":
-                if message.type in ["points-earned", "points-spent"]:
-                    balance = message.data["balance"]["balance"]
-                    streamer.channel_points = balance
-                    # Analytics switch
-                    if Settings.enable_analytics is True:
-                        streamer.persistent_series(
-                            event_type=message.data["point_gain"]["reason_code"]
-                            if message.type == "points-earned"
-                            else "Spent"
-                        )
+def __parse_datetime(data: str) -> datetime:
+    try:
+        return parser.parse(data)
+    except ParserError:
+        raise InvalidValueError([], data)
 
-                if message.type == "points-earned":
-                    earned = message.data["point_gain"]["total_points"]
-                    reason_code = message.data["point_gain"]["reason_code"]
 
-                    logger.info(
-                        f"+{earned} → {streamer} - Reason: {reason_code}.",
-                        extra={
-                            "emoji": ":rocket:",
-                            "event": Events.get(f"GAIN_FOR_{reason_code}"),
-                        },
-                    )
-                    streamer.update_history(
-                        reason_code, earned
-                    )
-                    # Analytics switch
-                    if Settings.enable_analytics is True:
-                        streamer.persistent_annotations(
-                            reason_code, f"+{earned} - {reason_code}"
-                        )
-                elif message.type == "claim-available":
-                    self.twitch.claim_bonus(
-                        streamer,
-                        message.data["claim"]["id"],
-                    )
+def iso8601_datetime_decoder(context: JSONDictDecoder, data: Any) -> datetime:
+    """
+    Parses a datetime object from a string into a datetime object.
 
-            elif message.topic == "video-playback-by-id":
-                # There is stream-up message type, but it's sent earlier than the API updates
-                if message.type == "stream-up":
-                    streamer.stream_up = time.time()
-                elif message.type == "stream-down":
-                    if streamer.is_online is True:
-                        streamer.set_offline()
-                elif message.type == "viewcount":
-                    if streamer.stream_up_elapsed():
-                        self.twitch.check_streamer_online(
-                            streamer
-                        )
+    :param context: The decoder that can be used to parse the data as a string.
+    :param data: The data to parse
+    :return: The result datetime object.
+    """
+    return expect_type_and_map(context, data, str, __parse_datetime)
 
-            elif message.topic == "raid":
-                if message.type == "raid_update_v2":
-                    raid = Raid(
-                        message.message["raid"]["id"],
-                        message.message["raid"]["target_login"],
-                    )
-                    self.twitch.update_raid(streamer, raid)
 
-            elif message.topic == "community-moments-channel-v1":
-                if message.type == "active":
-                    self.twitch.claim_moment(
-                        streamer, message.data["moment_id"]
-                    )
+def result_type_validator(data: str) -> ResultType:
+    """
+    Validates that a string represents a valid ResultType.
 
-            elif message.topic == "predictions-channel-v1":
+    :param data: The string to validate.
+    :return: The validated ResultType.
+    :raises WrongTypeError: If the string is not a valid ResultType.
+    """
+    try:
+        return ResultType(data)
+    except ValueError:
+        raise WrongTypeError([], ResultType, data)
 
-                event_dict = message.data["event"]
-                event_id = event_dict["id"]
-                event_status = event_dict["status"]
 
-                current_tmsp = parser.parse(message.timestamp)
+def result_type_decoder(context: JSONDictDecoder, data: Any) -> ResultType:
+    """
+    Decodes an ResultType from a Twitch PubSub message.
 
-                if (
-                        message.type == "event-created"
-                        and event_id not in self.events_predictions
-                ):
-                    if event_status == "ACTIVE":
-                        prediction_window_seconds = float(
-                            event_dict["prediction_window_seconds"]
-                        )
-                        # Reduce prediction window by 3/6s - Collect more accurate data for decision
-                        prediction_window_seconds = streamer.get_prediction_window(prediction_window_seconds)
-                        event = EventPrediction(
-                            streamer,
-                            event_id,
-                            event_dict["title"],
-                            parser.parse(event_dict["created_at"]),
-                            prediction_window_seconds,
-                            event_status,
-                            event_dict["outcomes"],
-                        )
-                        if (
-                                streamer.is_online
-                                and event.closing_bet_after(current_tmsp) > 0
-                        ):
-                            bet_settings = streamer.settings.bet
-                            if (
-                                    bet_settings.minimum_points is None
-                                    or streamer.channel_points
-                                    > bet_settings.minimum_points
-                            ):
-                                self.events_predictions[event_id] = event
-                                start_after = event.closing_bet_after(
-                                    current_tmsp
-                                )
+    :param context: The decoder that can be used to decode child properties.
+    :param data: The data to decode.
+    :return: The decoded ResultType.
+    """
+    return expect_type_and_map(context, data, str, result_type_validator)
 
-                                place_bet_thread = Timer(
-                                    start_after,
-                                    self.twitch.make_predictions,
-                                    (self.events_predictions[event_id],),
-                                )
-                                place_bet_thread.daemon = True
-                                place_bet_thread.start()
 
-                                logger.info(
-                                    f"Place the bet after: {start_after}s for: {self.events_predictions[event_id]}",
-                                    extra={
-                                        "emoji": ":alarm_clock:",
-                                        "event": Events.BET_START,
-                                    },
-                                )
-                            else:
-                                logger.info(
-                                    f"{streamer} have only {streamer.channel_points} channel points and the minimum for bet is: {bet_settings.minimum_points}",
-                                    extra={
-                                        "emoji": ":pushpin:",
-                                        "event": Events.BET_FILTERS,
-                                    },
-                                )
+def result_decoder(context: JSONDictDecoder, data: dict[str, Any]) -> Result:
+    """
+    Decodes a Result from a Twitch PubSub message.
 
-                elif (
-                        message.type == "event-updated"
-                        and event_id in self.events_predictions
-                ):
-                    self.events_predictions[event_id].status = event_status
-                    # Game over we can't update anymore the values... The bet was placed!
-                    if (
-                            self.events_predictions[event_id].bet_placed is False
-                            and self.events_predictions[event_id].bet.decision == {}
-                    ):
-                        self.events_predictions[event_id].bet.update_outcomes(
-                            event_dict["outcomes"]
-                        )
+    Examples:
+    {
+        "type": "LOSE",
+        "points_won": null,
+        "is_acknowledged": false
+    }
 
-            elif message.topic == "predictions-user-v1":
-                event_id = message.data["prediction"]["event_id"]
-                if event_id in self.events_predictions:
-                    event_prediction = self.events_predictions[event_id]
-                    if (
-                            message.type == "prediction-result"
-                            and event_prediction.bet_confirmed
-                    ):
-                        points = event_prediction.parse_result(
-                            message.data["prediction"]["result"]
-                        )
+    {
+        "type": "REFUND",
+        "points_won": null,
+        "is_acknowledged": false
+    }
 
-                        decision = event_prediction.bet.get_decision()
-                        choice = event_prediction.bet.decision["choice"]
+    {
+        "type": "WIN",
+        "points_won": 5000,
+        "is_acknowledged": false
+    }
 
-                        logger.info(
-                            (
-                                f"{event_prediction} - Decision: {choice}: {decision['title']} "
-                                f"({decision['color']}) - Result: {event_prediction.result['string']}"
-                            ),
-                            extra={
-                                "emoji": ":bar_chart:",
-                                "event": Events.get(
-                                    f"BET_{event_prediction.result['type']}"
-                                ),
-                            },
-                        )
+    :param context: The decoder that can be used to decode child properties.
+    :param data: The data that represents a Result.
+    :return: The decoded Result.
+    """
+    result_type = context.decode_property(data, "type", ResultType)
+    points_won = context.decode_property(data, "points_won", int | None)
+    return Result(result_type, points_won)
 
-                        streamer.update_history(
-                            "PREDICTION", points["gained"]
-                        )
 
-                        # Remove duplicate history records from previous message sent in community-points-user-v1
-                        if event_prediction.result["type"] == "REFUND":
-                            streamer.update_history(
-                                "REFUND",
-                                -points["placed"],
-                                counter=-1,
-                            )
-                        elif event_prediction.result["type"] == "WIN":
-                            streamer.update_history(
-                                "PREDICTION",
-                                -points["won"],
-                                counter=-1,
-                            )
+def prediction_decoder(context: JSONDictDecoder, data: Any) -> Prediction:
+    """
+    Parses a Prediction from a Twitch PubSub message.
 
-                        if event_prediction.result["type"]:
-                            # Analytics switch
-                            if Settings.enable_analytics is True:
-                                streamer.persistent_annotations(
-                                    event_prediction.result["type"],
-                                    f"{self.events_predictions[event_id].title}",
-                                )
-                    elif message.type == "prediction-made":
-                        event_prediction.bet_confirmed = True
-                        # Analytics switch
-                        if Settings.enable_analytics is True:
-                            streamer.persistent_annotations(
-                                "PREDICTION_MADE",
-                                f"Decision: {event_prediction.bet.decision['choice']} - {event_prediction.title}",
-                            )
-            elif message.topic == "community-points-channel-v1":
-                if message.type == "community-goal-created":
-                    # TODO Untested, hard to find this happening live
-                    streamer.update_community_goal(
-                        CommunityGoal.from_pubsub(message.data["community_goal"])
-                    )
-                elif message.type == "community-goal-updated":
-                    streamer.update_community_goal(
-                        CommunityGoal.from_pubsub(message.data["community_goal"])
-                    )
-                elif message.type == "community-goal-deleted":
-                    # TODO Untested, not sure what the message format for this is,
-                    #      https://github.com/sammwyy/twitch-ps/blob/master/main.js#L417
-                    #      suggests that it should be just the entire, now deleted, goal model
-                    streamer.delete_community_goal(message.data["community_goal"]["id"])
+    Format:
+    {
+        "id": SHA256,
+        "event_id": UUID,
+        "outcome_id": UUID,
+        "channel_id": str,
+        "points": int,
+        "predicted_at": ISO8601,
+        "updated_at": ISO8601,
+        "user_id": str,
+        "result": Result | None,
+        "user_display_name": str,
+    }
 
-                if message.type in ["community-goal-updated", "community-goal-created"]:
-                    self.twitch.contribute_to_community_goals(streamer)
+    Examples:
+    From a prediction-made event:
+    {
+        "timestamp": "2025-01-25T16:57:55.175990754Z",
+        "prediction": {
+            "id": "c2c9c9defd40d072942ab3515a769972a49c43e2673c8023fb4e6150893b03eb",
+            "event_id": "2f862332-a33f-4636-8623-32a33fd63677",
+            "outcome_id": "28fca425-8c27-4b7d-bca4-258c273b7d96",
+            "channel_id": "112358126",
+            "points": 1000,
+            "predicted_at": "2025-01-25T16:57:55.129766307Z",
+            "updated_at": "2025-01-25T16:57:55.129766307Z",
+            "user_id": "85647234",
+            "result": null,
+            "user_display_name": null
+        }
+    }
 
-        except Exception:
-            logger.error(
-                f"Exception raised for topic: {message.topic} and message: {message}",
-                exc_info=True,
-            )
+    From a prediction-updated event:
+    {
+        "timestamp": "2025-01-25T16:58:49.311849985Z",
+        "prediction": {
+            "id": "c2c9c9defd40d072942ab3515a769972a49c43e2673c8023fb4e6150893b03eb",
+            "event_id": "2f862332-a33f-4636-8623-32a33fd63677",
+            "outcome_id": "28fca425-8c27-4b7d-bca4-258c273b7d96",
+            "channel_id": "112358126",
+            "points": 2000,
+            "predicted_at": "2025-01-25T16:57:55.129766307Z",
+            "updated_at": "2025-01-25T16:58:49.265743919Z",
+            "user_id": "85647234",
+            "result": null,
+            "user_display_name": null
+        }
+    }
+
+    From a prediction-result event:
+    {
+        "timestamp": "2025-01-25T17:06:12.608913257Z",
+        "prediction": {
+            "id": "c2c9c9defd40d072942ab3515a769972a49c43e2673c8023fb4e6150893b03eb",
+            "event_id": "2f862332-a33f-4636-8623-32a33fd63677",
+            "outcome_id": "28fca425-8c27-4b7d-bca4-258c273b7d96",
+            "channel_id": "112358126",
+            "points": 2000,
+            "predicted_at": "2025-01-25T16:57:55.129766307Z",
+            "updated_at": "2025-01-25T17:06:12.605388424Z",
+            "user_id": "85647234",
+            "result": {
+                "type": "LOSE",
+                "points_won": null,
+                "is_acknowledged": false
+            },
+            "user_display_name": null
+        }
+    }
+
+    :param context: The decoder that can be used to decode child properties.
+    :param data: The data that represents a Prediction.
+    :return: The decoded Prediction.
+    """
+    outcome_id = context.decode_property(data, "outcome_id", UUID)
+    points = context.decode_property(data, "points", int)
+    result = context.decode_property(data, "result", Result | None)
+    return Prediction(outcome_id, points, result)
+
+
+def outcome_decoder(context: JSONDictDecoder, data: dict[str, Any]) -> Outcome:
+    """
+    Decodes an Outcome from a Twitch PubSub message.
+
+    Format:
+    {
+        "id": UUID,
+        "color": str,
+        "title": str,
+        "total_points": int,
+        "total_users": int,
+        "top_predictors": list[Prediction],
+        "badge": {
+            "version": str,
+            "set_id": str,
+        }
+    }
+
+    Example:
+    {
+        "id": "01948aa2-3d35-7b74-a9be-09f05a25f6ca",
+        "color": "BLUE",
+        "title": "Option Value",
+        "total_points": 0,
+        "total_users": 0,
+        "top_predictors": [],
+        "badge": {
+            "version": "blue-1",
+            "set_id": "predictions"
+        }
+    }
+
+    :param context: The decoder that can be used to decode child properties.
+    :param data: The data that represents an Outcome.
+    :return: The decoded Outcome.
+    """
+    identity = context.decode_property(data, "id", UUID)
+    color = context.decode_property(data, "color", str)
+    title = context.decode_property(data, "title", str)
+    total_points = context.decode_property(data, "total_points", int)
+    total_users = context.decode_property(data, "total_users", int)
+    top_predictors = context.decode_property(data, "top_predictors", list[Prediction])
+
+    return Outcome(identity, color, title, total_points, total_users, top_predictors)
+
+
+def event_prediction_decoder(
+    context: JSONDictDecoder, data: dict[str, Any]
+) -> EventPrediction:
+    """
+    Decodes an EventPrediction from a Twitch PubSub message.
+    Calls event.update() to calculate missing values.
+
+    :param context: The decoder that can be used to decode child properties.
+    :param data: The data that represents  an EventPrediction.
+    :return: The decoded EventPrediction.
+    """
+    identity = context.decode_property(data, "id", UUID)
+    title = context.decode_property(data, "title", str)
+    created_at = context.decode_property(data, "created_at", datetime)
+    prediction_window_seconds = context.decode_property(
+        data, "prediction_window_seconds", int
+    )
+    status = context.decode_property(data, "status", str)
+    outcomes = context.decode_property(data, "outcomes", list[Outcome])
+    event = EventPrediction(
+        identity, title, created_at, prediction_window_seconds, status, outcomes
+    )
+    event.update()
+    return event
+
+
+# Decoders for PubSub datatype
+additional_decoders = {
+    datetime: iso8601_datetime_decoder,
+    UUID: str_validator,
+    ResultType: result_type_decoder,
+    Result: result_decoder,
+    Prediction: prediction_decoder,
+    Outcome: outcome_decoder,
+    EventPrediction: event_prediction_decoder,
+}
