@@ -10,7 +10,7 @@ from TwitchChannelPointsMiner.classes.entities.Bet import BetSettings, DelayMode
 from TwitchChannelPointsMiner.classes.entities.Stream import Stream
 from TwitchChannelPointsMiner.classes.Settings import Events, Settings
 from TwitchChannelPointsMiner.constants import URL
-from TwitchChannelPointsMiner.utils import _millify
+from TwitchChannelPointsMiner.utils import millify
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +115,11 @@ class Streamer(object):
         self.mutex = Lock()
 
     def __repr__(self):
-        return f"Streamer(username={self.username}, channel_id={self.channel_id}, channel_points={_millify(self.channel_points)})"
+        return f"Streamer(username={self.username}, channel_id={self.channel_id}, channel_points={millify(self.channel_points)})"
 
     def __str__(self):
         return (
-            f"{self.username} ({_millify(self.channel_points)} points)"
+            f"{self.username} ({millify(self.channel_points)} points)"
             if Settings.logger.less
             else self.__repr__()
         )
@@ -158,7 +158,7 @@ class Streamer(object):
     def print_history(self):
         return "; ".join(
             [
-                f"{key} ({self.history[key]['counter']} times, {_millify(self.history[key]['amount'])} gained)"
+                f"{key} ({self.history[key]['counter']} times, {millify(self.history[key]['amount'])} gained)"
                 for key in sorted(self.history)
                 if self.history[key]["counter"] != 0
             ]

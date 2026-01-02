@@ -13,7 +13,7 @@ from millify import millify
 from TwitchChannelPointsMiner.constants import USER_AGENTS, GITHUB_url
 
 
-def _millify(input, precision=2):
+def millify(input, precision=2):
     return millify(input, precision)
 
 

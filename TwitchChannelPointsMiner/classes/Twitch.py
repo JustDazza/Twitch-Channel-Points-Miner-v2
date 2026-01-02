@@ -43,7 +43,7 @@ from TwitchChannelPointsMiner.constants import (
     GQLOperations,
 )
 from TwitchChannelPointsMiner.utils import (
-    _millify,
+    millify,
     create_chunks,
     internet_connection_available,
 )
@@ -727,8 +727,8 @@ class Twitch(object):
             else:
                 if decision["amount"] >= 10:
                     logger.info(
-                        # f"Place {_millify(decision['amount'])} channel points on: {event.bet.get_outcome(selector_index)}",
-                        f"Place {_millify(decision['amount'])} channel points on: {event.bet.get_outcome(decision['choice'])}",
+                        # f"Place {millify(decision['amount'])} channel points on: {event.bet.get_outcome(selector_index)}",
+                        f"Place {millify(decision['amount'])} channel points on: {event.bet.get_outcome(decision['choice'])}",
                         extra={
                             "emoji": ":four_leaf_clover:",
                             "event": Events.BET_GENERAL,
@@ -761,7 +761,7 @@ class Twitch(object):
                         )
                 else:
                     logger.info(
-                        f"Bet won't be placed as the amount {_millify(decision['amount'])} is less than the minimum required 10",
+                        f"Bet won't be placed as the amount {millify(decision['amount'])} is less than the minimum required 10",
                         extra={
                             "emoji": ":four_leaf_clover:",
                             "event": Events.BET_GENERAL,
