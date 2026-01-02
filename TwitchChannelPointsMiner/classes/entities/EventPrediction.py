@@ -5,7 +5,7 @@ from typing import Callable
 
 from TwitchChannelPointsMiner.classes.entities.Bet import OutcomeKeys
 from TwitchChannelPointsMiner.classes.Settings import Settings
-from TwitchChannelPointsMiner.utils import _millify, float_round
+from TwitchChannelPointsMiner.utils import millify, float_round
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class Prediction:
             gained = won - placed if self.result.result_type != ResultType.REFUND else 0
             prefix = "+" if gained >= 0 else ""
             return (
-                f"{self.result.result_type.name}, {action}: {prefix}{_millify(gained)}"
+                f"{self.result.result_type.name}, {action}: {prefix}{millify(gained)}"
             )
 
     def points_gained(self) -> int:
@@ -324,7 +324,7 @@ class Prediction:
             gained = won - placed if self.result.result_type != ResultType.REFUND else 0
             prefix = "+" if gained >= 0 else ""
             return (
-                f"{self.result.result_type.name}, {action}: {prefix}{_millify(gained)}"
+                f"{self.result.result_type.name}, {action}: {prefix}{millify(gained)}"
             )
 
     def points_gained(self) -> int:
