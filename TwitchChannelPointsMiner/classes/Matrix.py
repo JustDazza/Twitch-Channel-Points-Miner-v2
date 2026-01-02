@@ -4,15 +4,13 @@ import logging
 import requests
 from urllib.parse import quote
 
-from TwitchChannelPointsMiner.classes.EventHook import LogAttributeValidatingEventHook
 from TwitchChannelPointsMiner.classes.Settings import Events
 
 
-class Matrix(LogAttributeValidatingEventHook):
+class Matrix(object):
     __slots__ = ["access_token", "homeserver", "room_id", "events"]
 
     def __init__(self, username: str, password: str, homeserver: str, room_id: str, events: list):
-        super().__init__("skip_matrix")
         self.homeserver = homeserver
         self.room_id = quote(room_id)
         self.events = [str(e) for e in events]
@@ -40,6 +38,3 @@ class Matrix(LogAttributeValidatingEventHook):
                     "msgtype": "m.text"
                 }
             )
-
-    def validate_record(self, record):
-        return super().validate_record(record) and self.room_id != "..." and self.access_token

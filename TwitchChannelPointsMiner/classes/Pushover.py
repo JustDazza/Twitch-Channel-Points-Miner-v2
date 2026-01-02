@@ -2,18 +2,16 @@ from textwrap import dedent
 
 import requests
 
-from TwitchChannelPointsMiner.classes.EventHook import LogAttributeValidatingEventHook
 from TwitchChannelPointsMiner.classes.Settings import Events
 
 
-class Pushover(LogAttributeValidatingEventHook):
+class Pushover(object):
     __slots__ = ["userkey", "token", "priority", "sound", "events"]
 
     def __init__(self, userkey: str, token: str, priority, sound, events: list):
-        super().__init__("skip_pushover")
         self.userkey = userkey
         self.token = token
-        self.priority = priority
+        self. priority = priority
         self.sound = sound
         self.events = [str(e) for e in events]
 
@@ -30,8 +28,3 @@ class Pushover(LogAttributeValidatingEventHook):
                     "sound": self.sound,
                 },
             )
-
-    def validate_record(self, record):
-        return super().validate_record(
-            record
-        ) and self.userkey != "YOUR-ACCOUNT-TOKEN" and self.token != "YOUR-APPLICATION-TOKEN"

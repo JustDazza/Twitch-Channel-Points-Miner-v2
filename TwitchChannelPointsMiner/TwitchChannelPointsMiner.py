@@ -11,35 +11,24 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from TwitchChannelPointsMiner.classes import PubSub
 from TwitchChannelPointsMiner.classes.Chat import ChatPresence, ThreadChat
-from TwitchChannelPointsMiner.classes.Exceptions import StreamerDoesNotExistException
-from TwitchChannelPointsMiner.classes.PubSub import PubSubHandler
-from TwitchChannelPointsMiner.classes.Settings import FollowersOrder, Priority, Settings
-from TwitchChannelPointsMiner.classes.Twitch import Twitch
-from TwitchChannelPointsMiner.classes.entities.EventPrediction import EventPrediction
 from TwitchChannelPointsMiner.classes.entities.PubsubTopic import PubsubTopic
 from TwitchChannelPointsMiner.classes.entities.Streamer import (
     Streamer,
     StreamerSettings,
 )
-from TwitchChannelPointsMiner.classes.event_prediction.ManagerFactory import (
-    EventPredictionManagerFactory,
-    EventPredictionManagerFactoryBase,
-)
 from TwitchChannelPointsMiner.classes.Exceptions import StreamerDoesNotExistException
 from TwitchChannelPointsMiner.classes.Settings import FollowersOrder, Priority, Settings
 from TwitchChannelPointsMiner.classes.Twitch import Twitch
 from TwitchChannelPointsMiner.classes.WebSocketsPool import WebSocketsPool
-from TwitchChannelPointsMiner.JSONDictDecoder import JSONDictDecoder
 from TwitchChannelPointsMiner.logger import LoggerSettings, configure_loggers
 from TwitchChannelPointsMiner.utils import (
-    millify,
+    _millify,
     at_least_one_value_in_settings_is,
     check_versions,
     get_user_agent,
+    internet_connection_available,
     set_default_settings,
-    AttemptStrategy,
 )
 
 # Suppress:
@@ -70,8 +59,7 @@ class TwitchChannelPointsMiner:
         "disable_at_in_nickname",
         "priority",
         "streamers",
-        "event_prediction_manager_factory",
-        "json_decoder",
+        "events_predictions",
         "minute_watcher_thread",
         "sync_campaigns_thread",
         "ws_pool",
@@ -97,10 +85,6 @@ class TwitchChannelPointsMiner:
         logger_settings: LoggerSettings = LoggerSettings(),
         # Default values for all streamers
         streamer_settings: StreamerSettings = StreamerSettings(),
-        # Event Prediction Manager factory
-        event_prediction_manager_factory: EventPredictionManagerFactoryBase = EventPredictionManagerFactory(),
-        # JSON decoder
-        json_decoder: JSONDictDecoder = None,
     ):
         # Fixes TypeError: 'NoneType' object is not subscriptable
         if not username or username == "your-twitch-username":
@@ -112,8 +96,6 @@ class TwitchChannelPointsMiner:
         Settings.disable_ssl_cert_verification = disable_ssl_cert_verification
 
         Settings.disable_at_in_nickname = disable_at_in_nickname
-
-        Settings.use_hermes = use_hermes
 
         import socket
 
@@ -155,26 +137,16 @@ class TwitchChannelPointsMiner:
 
         # user_agent = get_user_agent("FIREFOX")
         user_agent = get_user_agent("CHROME")
-
-        if gql is None:
-            # Use the default factory
-            gql = GQLFactory()
-        elif isinstance(gql, AttemptStrategy):
-            # Convenience for the expected most common use case where gql is provided
-            gql = GQLFactory(attempt_strategy=gql)
-        elif not isinstance(gql, GQLFactory):
-            # Invalid argument type
-            raise ValueError(f"gql must be an instance of be one of None, AttemptStrategy, or GQLFactory")
-
-        self.twitch = Twitch(self.username, user_agent, password, gql_factory=gql)
+        self.twitch = Twitch(self.username, user_agent, password)
 
         self.claim_drops_startup = claim_drops_startup
         self.priority = priority if isinstance(priority, list) else [priority]
 
         self.streamers: list[Streamer] = []
+        self.events_predictions = {}
         self.minute_watcher_thread = None
         self.sync_campaigns_thread = None
-        self.ws_pool: WebSocketsPool | None = None
+        self.ws_pool = None
 
         self.session_id = str(uuid.uuid4())
         self.running = False
@@ -183,12 +155,6 @@ class TwitchChannelPointsMiner:
 
         self.logs_file, self.queue_listener = configure_loggers(
             self.username, logger_settings
-        )
-        self.event_prediction_manager_factory = event_prediction_manager_factory
-        self.json_decoder = (
-            json_decoder
-            if json_decoder
-            else JSONDictDecoder().with_decoders(PubSub.additional_decoders)
         )
 
         # Check for the latest version of the script
@@ -312,7 +278,7 @@ class TwitchChannelPointsMiner:
                         if streamer.settings.chat != ChatPresence.NEVER:
                             streamer.irc_chat = ThreadChat(
                                 self.username,
-                                self.twitch.client_session.login.get_auth_token(),
+                                self.twitch.twitch_login.get_auth_token(),
                                 streamer.username,
                             )
                         self.streamers.append(streamer)
@@ -350,8 +316,8 @@ class TwitchChannelPointsMiner:
             # If we have at least one streamer with settings = claim_drops True
             # Spawn a thread for sync inventory and dashboard
             if (
-                    at_least_one_value_in_settings_is(self.streamers, "claim_drops", True)
-                    is True
+                at_least_one_value_in_settings_is(self.streamers, "claim_drops", True)
+                is True
             ):
                 self.sync_campaigns_thread = threading.Thread(
                     target=self.twitch.sync_campaigns,
@@ -368,19 +334,14 @@ class TwitchChannelPointsMiner:
             self.minute_watcher_thread.name = "Minute watcher"
             self.minute_watcher_thread.start()
 
-            prediction_manager = self.event_prediction_manager_factory.produce(
-                self.twitch.place_bet
-            )
-
             self.ws_pool = WebSocketsPool(
                 twitch=self.twitch,
                 streamers=self.streamers,
-                prediction_manager=prediction_manager,
-                json_decoder=self.json_decoder,
+                events_predictions=self.events_predictions,
             )
 
             # Subscribe to community-points-user. Get update for points spent or gains
-            user_id = self.twitch.client_session.login.get_user_id()
+            user_id = self.twitch.twitch_login.get_user_id()
             # print(f"!!!!!!!!!!!!!! USER_ID: {user_id}")
 
             # Fixes 'ERR_BADAUTH'
@@ -430,7 +391,19 @@ class TwitchChannelPointsMiner:
             refresh_context = time.time()
             while self.running:
                 time.sleep(random.uniform(20, 60))
-                self.ws_pool.check_stale_connections()
+                # Do an external control for WebSocket. Check if the thread is running
+                # Check if is not None because maybe we have already created a new connection on array+1 and now index is None
+                for index in range(0, len(self.ws_pool.ws)):
+                    if (
+                        self.ws_pool.ws[index].is_reconnecting is False
+                        and self.ws_pool.ws[index].elapsed_last_ping() > 10
+                        and internet_connection_available() is True
+                    ):
+                        logger.info(
+                            f"#{index} - The last PING was sent more than 10 minutes ago. Reconnecting to the WebSocket..."
+                        )
+                        WebSocketsPool.handle_reconnection(self.ws_pool.ws[index])
+
                 if ((time.time() - refresh_context) // 60) >= 30:
                     refresh_context = time.time()
                     for index in range(0, len(self.streamers)):
@@ -442,11 +415,14 @@ class TwitchChannelPointsMiner:
     def end(self, signum, frame):
         if not self.running:
             return
-
+        
         logger.info("CTRL+C Detected! Please wait just a moment!")
 
         for streamer in self.streamers:
-            if streamer.irc_chat is not None and streamer.settings.chat != ChatPresence.NEVER:
+            if (
+                streamer.irc_chat is not None
+                and streamer.settings.chat != ChatPresence.NEVER
+            ):
                 streamer.leave_chat()
                 if streamer.irc_chat.is_alive() is True:
                     streamer.irc_chat.join()
@@ -489,36 +465,27 @@ class TwitchChannelPointsMiner:
             extra={"emoji": ":hourglass:"},
         )
 
-        if not Settings.logger.less and any(
-            len(streamer.event_predictions) > 0 for streamer in self.streamers
-        ):
+        if not Settings.logger.less and self.events_predictions != {}:
             print("")
-            if self.ws_pool is not None:
-                for streamer, event in sorted(
-                    (
-                        (streamer, event)
-                        for streamer in filter(
-                            lambda streamer: streamer.settings.make_predictions,
-                            self.streamers,
-                        )
-                        for event in streamer.event_predictions.values()
-                    ),
-                    key=lambda pair: pair[1].created_at,
+            for event_id in self.events_predictions:
+                event = self.events_predictions[event_id]
+                if (
+                    event.bet_confirmed is True
+                    and event.streamer.settings.make_predictions is True
                 ):
-                    if event.prediction is not None:
+                    logger.info(
+                        f"{event.streamer.settings.bet}",
+                        extra={"emoji": ":wrench:"},
+                    )
+                    if event.streamer.settings.bet.filter_condition is not None:
                         logger.info(
-                            f"{streamer.settings.bet}",
-                            extra={"emoji": ":wrench:"},
+                            f"{event.streamer.settings.bet.filter_condition}",
+                            extra={"emoji": ":pushpin:"},
                         )
-                        if streamer.settings.bet.filter_condition is not None:
-                            logger.info(
-                                f"{streamer.settings.bet.filter_condition}",
-                                extra={"emoji": ":pushpin:"},
-                            )
-                        logger.info(
-                            f"{event.recap()}",
-                            extra={"emoji": ":bar_chart:"},
-                        )
+                    logger.info(
+                        f"{event.print_recap()}",
+                        extra={"emoji": ":bar_chart:"},
+                    )
 
         print("")
         for streamer_index in range(0, len(self.streamers)):
@@ -527,25 +494,19 @@ class TwitchChannelPointsMiner:
                     self.streamers[streamer_index].channel_points
                     - self.original_streamers[streamer_index]
                 )
-
+                
                 from colorama import Fore
-
                 streamer_highlight = Fore.YELLOW
-
+                
                 streamer_gain = (
-                    f"{streamer_highlight}{self.streamers[streamer_index]}{Fore.RESET}, Total Points Gained: {millify(gained)}"
+                    f"{streamer_highlight}{self.streamers[streamer_index]}{Fore.RESET}, Total Points Gained: {_millify(gained)}"
                     if Settings.logger.less
-                    else f"{streamer_highlight}{repr(self.streamers[streamer_index])}{Fore.RESET}, Total Points Gained (after farming - before farming): {millify(gained)}"
+                    else f"{streamer_highlight}{repr(self.streamers[streamer_index])}{Fore.RESET}, Total Points Gained (after farming - before farming): {_millify(gained)}"
                 )
-
-                indent = " " * 25
-                streamer_history = "\n".join(
-                    f"{indent}{history}"
-                    for history in self.streamers[streamer_index]
-                    .print_history()
-                    .split("; ")
-                )
-
+                
+                indent = ' ' * 25
+                streamer_history = '\n'.join(f"{indent}{history}" for history in self.streamers[streamer_index].print_history().split('; ')) 
+                
                 logger.info(
                     f"{streamer_gain}\n{streamer_history}",
                     extra={"emoji": ":moneybag:"},

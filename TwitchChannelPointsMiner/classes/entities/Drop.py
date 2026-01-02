@@ -1,12 +1,15 @@
 from datetime import datetime
 
 from TwitchChannelPointsMiner.classes.Settings import Settings
-from TwitchChannelPointsMiner.classes.gql.data.response.Drops import (
-    TimeBasedDropDetails,
-    TimeBasedDropInProgress,
-)
 from TwitchChannelPointsMiner.utils import percentage
 
+def parse_datetime(datetime_str):
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(datetime_str, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"time data '{datetime_str}' does not match format")
 
 class Drop(object):
     __slots__ = [
@@ -14,7 +17,6 @@ class Drop(object):
         "name",
         "benefit",
         "minutes_required",
-        "subs_required",
         "has_preconditions_met",
         "current_minutes_watched",
         "drop_instance_id",
@@ -27,12 +29,13 @@ class Drop(object):
         "is_printable",
     ]
 
-    def __init__(self, data: TimeBasedDropDetails | TimeBasedDropInProgress):
-        self.id = data.id
-        self.name = data.name
-        self.benefit = ", ".join(set([bf for bf in data.benefits]))
-        self.minutes_required = data.required_minutes_watched
-        self.subs_required = data.required_subs
+    def __init__(self, dict):
+        self.id = dict["id"]
+        self.name = dict["name"]
+        self.benefit = ", ".join(
+            list(set([bf["benefit"]["name"] for bf in dict["benefitEdges"]]))
+        )
+        self.minutes_required = dict["requiredMinutesWatched"]
 
         self.has_preconditions_met = None  # [True, False], None we don't know
         self.current_minutes_watched = 0
@@ -42,20 +45,23 @@ class Drop(object):
         self.is_printable = False
         self.percentage_progress = 0
 
-        self.end_at = data.end_at
-        self.start_at = data.start_at
+        self.end_at = parse_datetime(dict["endAt"])
+        self.start_at = parse_datetime(dict["startAt"])
         self.dt_match = self.start_at < datetime.now() < self.end_at
 
-    def update(self, progress: TimeBasedDropInProgress.SelfEdge):
-        self.has_preconditions_met = progress.has_preconditions_met
+    def update(
+        self,
+        progress,
+    ):
+        self.has_preconditions_met = progress["hasPreconditionsMet"]
 
         updated_percentage = percentage(
-            progress.current_minutes_watched, self.minutes_required
+            progress["currentMinutesWatched"], self.minutes_required
         )
         quarter = round((updated_percentage / 25), 4).is_integer()
         self.is_printable = (
             # The new currentMinutesWatched are GT than previous
-            progress.current_minutes_watched > self.current_minutes_watched
+            progress["currentMinutesWatched"] > self.current_minutes_watched
             and (
                 # The drop is printable when we have a new updated values and:
                 #  - also the percentage It's different and  quarter is True (self.current_minutes_watched != 0 for skip boostrap phase)
@@ -66,15 +72,15 @@ class Drop(object):
                     and self.current_minutes_watched != 0
                 )
                 or (
-                    progress.current_minutes_watched == 1
+                    progress["currentMinutesWatched"] == 1
                     and self.current_minutes_watched == 0
                 )
             )
         )
 
-        self.current_minutes_watched = progress.current_minutes_watched
-        self.drop_instance_id = progress.drop_instance_id
-        self.is_claimed = progress.is_claimed
+        self.current_minutes_watched = progress["currentMinutesWatched"]
+        self.drop_instance_id = progress["dropInstanceID"]
+        self.is_claimed = progress["isClaimed"]
         self.is_claimable = (
             self.is_claimed is False and self.drop_instance_id is not None
         )

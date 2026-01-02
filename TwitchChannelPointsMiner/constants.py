@@ -5,9 +5,8 @@ URL = "https://www.twitch.tv"               # Browser, Apps
 IRC = "irc.chat.twitch.tv"
 IRC_PORT = 6667
 WEBSOCKET = "wss://pubsub-edge.twitch.tv/v1"
-HERMES_WEBSOCKET = "wss://hermes.twitch.tv/v1"
 CLIENT_ID = "ue6666qo983tsx6so1t0vnawi233wa"        # TV
-CLIENT_ID_WEB = "kimne78kx3ncx6brgo4mv6wki5h1ko"    # Browser
+# CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"      # Browser
 # CLIENT_ID = "r8s4dac0uhzifbpu9sjdiwzctle17ff"     # Mobile Browser
 # CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"     # Android App
 # CLIENT_ID = "851cqzxpb9bqu9z6galo155du"           # iOS App
@@ -64,7 +63,7 @@ class GQLOperations:
         "extensions": {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": "e785b65ff71ad7b363b34878335f27dd9372869ad0c5740a130b9268bcdbe7e7",
+                "sha256Hash": "a5f2e34d626a9f4f5c0204f910bab2194948a9502089be558bb6e779a9e1b3d2",
             }
         },
     }
@@ -100,7 +99,7 @@ class GQLOperations:
         "extensions": {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": "374314de591e69925fce3ddc2bcf085796f56ebb8cad67a0daa3165c03adc345",
+                "sha256Hash": "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024",
             }
         },
     }

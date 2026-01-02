@@ -2,17 +2,15 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from threading import Lock
 
 from TwitchChannelPointsMiner.classes.Chat import ChatPresence, ThreadChat
 from TwitchChannelPointsMiner.classes.entities.Bet import BetSettings, DelayMode
-from TwitchChannelPointsMiner.classes.entities.EventPrediction import EventPrediction
 from TwitchChannelPointsMiner.classes.entities.Stream import Stream
 from TwitchChannelPointsMiner.classes.Settings import Events, Settings
-from TwitchChannelPointsMiner.classes.gql import Properties
 from TwitchChannelPointsMiner.constants import URL
-from TwitchChannelPointsMiner.utils import millify
+from TwitchChannelPointsMiner.utils import _millify
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +78,10 @@ class Streamer(object):
         "online_at",
         "offline_at",
         "channel_points",
-        "event_predictions",
         "community_goals",
         "minute_watched_requests",
         "viewer_is_mod",
-        "active_multipliers",
+        "activeMultipliers",
         "irc_chat",
         "stream",
         "raid",
@@ -96,18 +93,16 @@ class Streamer(object):
     def __init__(self, username, settings=None):
         self.username: str = username.lower().strip()
         self.channel_id: str = ""
-        self.settings: StreamerSettings = settings
+        self.settings = settings
         self.is_online = False
         self.stream_up = 0
         self.online_at = 0
         self.offline_at = 0
         self.channel_points = 0
-        self.event_predictions: dict[str, EventPrediction] = {}
-        """The EventPredictions for this Streamer, each mapped to their 'event_id' property."""
         self.community_goals = {}
         self.minute_watched_requests = None
         self.viewer_is_mod = False
-        self.active_multipliers: list[Properties.Multiplier] | None = None
+        self.activeMultipliers = None
         self.irc_chat = None
 
         self.stream = Stream()
@@ -120,11 +115,11 @@ class Streamer(object):
         self.mutex = Lock()
 
     def __repr__(self):
-        return f"Streamer(username={self.username}, channel_id={self.channel_id}, channel_points={millify(self.channel_points)})"
+        return f"Streamer(username={self.username}, channel_id={self.channel_id}, channel_points={_millify(self.channel_points)})"
 
     def __str__(self):
         return (
-            f"{self.username} ({millify(self.channel_points)} points)"
+            f"{self.username} ({_millify(self.channel_points)} points)"
             if Settings.logger.less
             else self.__repr__()
         )
@@ -163,7 +158,7 @@ class Streamer(object):
     def print_history(self):
         return "; ".join(
             [
-                f"{key} ({self.history[key]['counter']} times, {millify(self.history[key]['amount'])} gained)"
+                f"{key} ({self.history[key]['counter']} times, {_millify(self.history[key]['amount'])} gained)"
                 for key in sorted(self.history)
                 if self.history[key]["counter"] != 0
             ]
@@ -190,28 +185,21 @@ class Streamer(object):
         )
 
     def viewer_has_points_multiplier(self):
-        return self.active_multipliers is not None and len(self.active_multipliers) > 0
+        return self.activeMultipliers is not None and len(self.activeMultipliers) > 0
 
     def total_points_multiplier(self):
         return (
             sum(
                 map(
                     lambda x: x["factor"],
-                    self.active_multipliers,
+                    self.activeMultipliers,
                 ),
             )
-            if self.active_multipliers is not None
+            if self.activeMultipliers is not None
             else 0
         )
 
-    def get_bet_wait_duration(self, prediction_window_seconds: float) -> float:
-        """
-        Gets the duration of time to wait, in seconds, relative to the start of an event, before placing a bet for the
-        given prediction window duration.
-
-        :param prediction_window_seconds: The length of time an event is open for predictions.
-        :return: The amount of time to wait in seconds.
-        """
+    def get_prediction_window(self, prediction_window_seconds):
         delay_mode = self.settings.bet.delay_mode
         delay = self.settings.bet.delay
         if delay_mode == DelayMode.FROM_START:
@@ -222,21 +210,6 @@ class Streamer(object):
             return prediction_window_seconds * delay
         else:
             return prediction_window_seconds
-
-    def get_time_until_place_bet(
-        self, event: EventPrediction, current_timestamp: datetime
-    ) -> float:
-        """
-        Gets the duration of time to wait, in seconds, relative to the given timestamp, before placing a bet for the
-        event with the given id.
-
-        :param event: The event.
-        :param current_timestamp: The time relative to which to measure the duration.
-        :return: The duration of time to wait in seconds.
-        """
-        bet_wait_time = self.get_bet_wait_duration(event.prediction_window_seconds)
-        place_bet_at = event.created_at + timedelta(seconds=bet_wait_time)
-        return (place_bet_at - current_timestamp).total_seconds()
 
     # === ANALYTICS === #
     def persistent_annotations(self, event_type, event_text):
